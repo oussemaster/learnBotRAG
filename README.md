@@ -11,5 +11,5 @@ Ein lokales, KI-gestütztes RAG-System (Retrieval-Augmented Generation) zum Abfr
 
 1. **Projekt klonen & Ordner betreten:**
    ```bash
-   git clone <dein-repo-url>
+   git clone https://github.com/oussemaster/learnBotRAG.git
    cd learnBotRAG
