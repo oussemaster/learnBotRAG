@@ -1,0 +1,27 @@
+# Virtuelle Umgebungen (wir decken alle gängigen Namen ab)
+.venv/
+venv/
+env/
+.virtualEnvDir/
+
+# Sensible Daten (API-Keys niemals committen!)
+.env
+
+# LangChain / Vektor-Datenbanken
+vector_db/
+chroma.sqlite3
+
+# Python Cache & System-Dateien
+__pycache__/
+*.pyc
+.DS_Store
+
+# IDEs (Cursor/VS Code)
+.vscode/
+.cursor/
+
+# Ignoriere alle Dateien im data-Ordner (wegen Urheberrecht / Größe)...
+data/*
+
+# ...ABER ignoriere nicht die .gitkeep Datei (damit der leere Ordner in Git existiert)
+!data/.gitkeep
