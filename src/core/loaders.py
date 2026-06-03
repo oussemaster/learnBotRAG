@@ -50,20 +50,14 @@ def discover_data_paths(data_dir: Path = DATA_DIR) -> list[Path]:
 
 def load_documents(paths: list[Path]) -> list[Document]:
     """
-    Lädt Dateien über die Loader-Factory (Suffix → Loader-Klasse).
-
-    Unterstützte Formate:
-      - ``.csv``  → CSVLoader  (eine Zeile = ein Document)
-      - ``.pdf``  → PyPDFLoader (mode=page → eine Seite = ein Document)
-
-    Unbekannte Endungen werden übersprungen; defekte Dateien werden geloggt,
-    ohne die gesamte Laderunde abzubrechen.
-
-    Args:
-        paths: Liste der einzulesenden Dateipfade.
-
-    Returns:
-        Liste aller geladenen :class:`~langchain_core.documents.Document`-Chunks.
+    Loads files using the Loader Factory (Suffix -> Loader Class).
+    
+    Supported Formats:
+        - `.csv` -> CSVLoader (one row = one document)
+        - `.pdf` -> PyPDFLoader (mode=page -> one page = one document)
+    
+    Unknown extensions will be skipped; corrupted files will be logged
+    without interrupting the entire ingestion pipeline.
     """
     documents: list[Document] = []
     for path in paths:
