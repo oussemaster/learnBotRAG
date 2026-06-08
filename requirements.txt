@@ -1,5 +1,6 @@
 langchain
 langchain-openai
+langchain-ollama
 langchain-community
 langchain-chroma
 python-dotenv

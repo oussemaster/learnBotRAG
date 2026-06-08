@@ -12,6 +12,7 @@ from pathlib import Path
 
 from langchain_community.document_loaders import CSVLoader, PyPDFLoader
 from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from src.config import DATA_DIR
 from src.utils.logger import get_logger
@@ -51,15 +52,15 @@ def discover_data_paths(data_dir: Path = DATA_DIR) -> list[Path]:
 def load_documents(paths: list[Path]) -> list[Document]:
     """
     Loads files using the Loader Factory (Suffix -> Loader Class).
-    
+
     Supported Formats:
         - `.csv` -> CSVLoader (one row = one document)
         - `.pdf` -> PyPDFLoader (mode=page -> one page = one document)
-    
+
     Unknown extensions will be skipped; corrupted files will be logged
     without interrupting the entire ingestion pipeline.
     """
-    documents: list[Document] = []
+    raw_documents: list[Document] = []
     for path in paths:
         suffix = path.suffix.lower()
         loader_cls = LOADER_BY_SUFFIX.get(suffix)
@@ -67,10 +68,19 @@ def load_documents(paths: list[Path]) -> list[Document]:
             log.warning("    [✗] Nicht unterstützt: %s – übersprungen.", path.name)
             continue
         try:
-            documents.extend(loader_cls(str(path)).load())
+            raw_documents.extend(loader_cls(str(path)).load())
             log.info("    [✓] Geladen: %s (%s)", path.name, loader_cls.__name__)
         except FileNotFoundError:
             log.warning("    [✗] Datei nicht gefunden: %s – übersprungen.", path)
         except Exception as exc:  # noqa: BLE001
             log.error("    [✗] Fehler beim Laden von '%s': %s", path, exc)
-    return documents
+    if not raw_documents:
+        return raw_documents
+
+    log.info("    [✂️] Zerschneide Dokumente in kleinere Chunks ...")
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000, chunk_overlap=200, separators=["\n\n", "\n", ".", " ", ""]
+    )
+
+    split_docs = text_splitter.split_documents(raw_documents)
+    return split_docs

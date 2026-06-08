@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.config import MODEL_NAME, TOP_K_DOCUMENTS  # noqa: E402
+from src.config import TOP_K_DOCUMENTS, LLM_PROVIDER  # noqa: E402
 from src.utils.logger import get_logger, setup_logging  # noqa: E402
 
 setup_logging()
@@ -41,7 +41,9 @@ def main() -> None:
     from src.core.vectorstore import get_or_create_retriever
 
     try:
-        log.info("\nModell: %s", MODEL_NAME)
+        from src.config import OPENAI_MODEL_NAME, LOCAL_MODEL_NAME  # noqa: F401
+        active_model = OPENAI_MODEL_NAME if LLM_PROVIDER == "openai" else LOCAL_MODEL_NAME
+        log.info("\nModell: %s", active_model)
         log.info("%s", "=" * 70)
         log.info("  RAG Demo – Retrieval-Augmented Generation (Persistent)")
         log.info("%s\n", "=" * 70)

@@ -8,7 +8,7 @@ env/
 .env
 
 # LangChain / Vektor-Datenbanken
-vector_db/
+vector_db*/
 chroma.sqlite3
 
 # Python Cache & System-Dateien
@@ -25,3 +25,7 @@ data/*
 
 # ...ABER ignoriere nicht die .gitkeep Datei (damit der leere Ordner in Git existiert)
 !data/.gitkeep
+
+# Ignoriere temporäre Skripte oder Dateien, die nicht Teil des Hauptprojekts sind
+tmp.py
+        

@@ -13,9 +13,18 @@ from pathlib import Path
 
 from langchain_chroma import Chroma
 from langchain_core.vectorstores import VectorStoreRetriever
+from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
+from langchain_ollama import OllamaEmbeddings
 
-from src.config import CHROMA_SENTINEL, DATA_DIR, TOP_K_DOCUMENTS, VECTOR_DB_PATH
+from src.config import (
+    CHROMA_SENTINEL,
+    DATA_DIR,
+    TOP_K_DOCUMENTS,
+    VECTOR_DB_PATH,
+    LLM_PROVIDER,
+    LOCAL_EMBEDDING_NAME,
+)
 from src.core.loaders import discover_data_paths, load_documents
 from src.core.tracker import (
     build_registry_for_paths,
@@ -32,6 +41,7 @@ log = get_logger(__name__)
 
 # ── Interne Chroma-Hilfen ──────────────────────────────────────────────────────
 
+
 def _db_exists() -> bool:
     """
     Prüft, ob Chroma bereits eine befüllte DB auf Disk hat.
@@ -43,7 +53,7 @@ def _db_exists() -> bool:
     return CHROMA_SENTINEL.exists()
 
 
-def _open_chroma_store(embeddings: OpenAIEmbeddings) -> Chroma:
+def _open_chroma_store(embeddings: Embeddings) -> Chroma:
     """Öffnet den persistenten Chroma-Store (ohne Embedding-API-Calls)."""
     return Chroma(
         persist_directory=str(VECTOR_DB_PATH),
@@ -83,6 +93,7 @@ def _delete_documents_for_paths(store: Chroma, paths: list[Path]) -> None:
 
 # ── Tracker-Fallback ───────────────────────────────────────────────────────────
 
+
 def reconcile_registry_from_chroma(
     store: Chroma,
     all_paths: list[Path],
@@ -106,6 +117,7 @@ def reconcile_registry_from_chroma(
     for path in all_paths:
         if str(path.resolve()) in indexed_sources:
             from src.core.tracker import file_content_hash
+
             registry[_tracker_key(path)] = file_content_hash(path)
     if registry:
         save_processed_registry(registry)
@@ -118,8 +130,9 @@ def reconcile_registry_from_chroma(
 
 # ── Pipeline-Schritte ──────────────────────────────────────────────────────────
 
+
 def _bootstrap_store(
-    embeddings: OpenAIEmbeddings,
+    embeddings: Embeddings,  # noqa: ARG001  (Signatur-Konsistenz)
     paths: list[Path],
 ) -> Chroma:
     """
@@ -147,13 +160,21 @@ def _bootstrap_store(
     log.info("      %d Dokument-Chunks insgesamt geladen.", len(documents))
 
     log.info("[2/3] Berechne Embeddings und baue Vektorindex auf …")
-    log.info("      (Dieser Schritt ruft die OpenAI Embeddings API auf.)")
     VECTOR_DB_PATH.mkdir(parents=True, exist_ok=True)
-    store = Chroma.from_documents(
-        documents=documents,
-        embedding=embeddings,
+    ## 1. Eine leere Datenbank erstellen
+    store = Chroma(
         persist_directory=str(VECTOR_DB_PATH),
+        embedding_function=embeddings,
     )
+
+    # 2. Dokumente in kleinen Stapeln (Batches) hinzufügen, um Speicher- und API-Last zu reduzieren
+    batch_size = 100
+    total_batches = (len(documents) + batch_size - 1) // batch_size
+    log.info("      Sende Dokumente an das Modell in %d Batches...", total_batches)
+    for i in range(0, len(documents), batch_size):
+        batch = documents[i : i + batch_size]
+        store.add_documents(batch)
+        log.info("      - Batch %d/%d erfolgreich indexiert.", (i // batch_size) + 1, total_batches)
 
     save_processed_registry(build_registry_for_paths(paths))
     log.info("[3/3] Datenbank persistent gespeichert unter: %s", VECTOR_DB_PATH)
@@ -163,7 +184,7 @@ def _bootstrap_store(
 
 def _ingest_delta(
     store: Chroma,
-    embeddings: OpenAIEmbeddings,  # noqa: ARG001  (Signatur-Konsistenz)
+    embeddings: Embeddings,  # noqa: ARG001  (Signatur-Konsistenz)
     delta_paths: list[Path],
     registry: dict[str, str],
 ) -> Chroma:
@@ -181,11 +202,7 @@ def _ingest_delta(
     """
     from src.core.tracker import _tracker_key  # lokaler Import verhindert Zirkularität
 
-    changed_keys = {
-        _tracker_key(p)
-        for p in delta_paths
-        if _tracker_key(p) in registry
-    }
+    changed_keys = {_tracker_key(p) for p in delta_paths if _tracker_key(p) in registry}
     if changed_keys:
         changed_paths = [p for p in delta_paths if _tracker_key(p) in changed_keys]
         log.info(
@@ -203,8 +220,14 @@ def _ingest_delta(
         return store
 
     log.info("      %d Dokument-Chunks zum Indexieren.", len(documents))
-    log.info("[2/2] Berechne Embeddings (OpenAI API) und füge zum Store hinzu …")
-    store.add_documents(documents)
+    log.info("[2/2] Berechne Embeddings und füge zum Store hinzu …")
+    
+    batch_size = 100
+    total_batches = (len(documents) + batch_size - 1) // batch_size
+    for i in range(0, len(documents), batch_size):
+        batch = documents[i : i + batch_size]
+        store.add_documents(batch)
+        log.info("      - Delta-Batch %d/%d hinzugefügt.", (i // batch_size) + 1, total_batches)
 
     save_processed_registry(merge_into_registry(registry, delta_paths))
     log.info("[✓] Delta ingestiert. %d Vektoren gesamt.\n", _vector_count(store))
@@ -213,7 +236,8 @@ def _ingest_delta(
 
 # ── Öffentliche API ────────────────────────────────────────────────────────────
 
-def initialize_vector_store(embeddings: OpenAIEmbeddings) -> Chroma:
+
+def initialize_vector_store(embeddings: Embeddings) -> Chroma:
     """
     Entscheidet: Erstaufbau, Mirror-Cleanup, inkrementelles Delta oder reines Laden.
 
@@ -223,7 +247,7 @@ def initialize_vector_store(embeddings: OpenAIEmbeddings) -> Chroma:
       3. Delta ingestieren (falls nötig).
 
     Args:
-        embeddings: OpenAI-Embeddings-Instanz.
+        embeddings: Embeddings-Instanz.
 
     Returns:
         Einsatzbereiter Chroma-Store.
@@ -257,7 +281,9 @@ def initialize_vector_store(embeddings: OpenAIEmbeddings) -> Chroma:
     delta_paths = compute_ingest_delta(all_paths, registry)
     if not delta_paths:
         log.info("[↩] Keine neuen Dateien gefunden. Lade DB …")
-        log.info("[✓] %d Vektoren verfügbar (ohne Embedding-API).\n", _vector_count(store))
+        log.info(
+            "[✓] %d Vektoren verfügbar (ohne Embedding-API).\n", _vector_count(store)
+        )
         return store
 
     return _ingest_delta(store, embeddings, delta_paths, registry)
@@ -278,6 +304,15 @@ def get_or_create_retriever(k: int = TOP_K_DOCUMENTS) -> VectorStoreRetriever:
     Returns:
         Konfigurierter :class:`~langchain_core.vectorstores.VectorStoreRetriever`.
     """
-    embeddings = OpenAIEmbeddings()
+
+    if LLM_PROVIDER == "ollama":
+        log.info(
+            "[⚙️] Initialisiere lokale Embeddings via Ollama: %s", LOCAL_EMBEDDING_NAME
+        )
+        embeddings: Embeddings = OllamaEmbeddings(model=LOCAL_EMBEDDING_NAME)
+    else:
+        log.info("[⚙️] Initialisiere OpenAI Embeddings via OpenAI.")
+        embeddings: Embeddings = OpenAIEmbeddings()
+
     store = initialize_vector_store(embeddings)
     return store.as_retriever(search_kwargs={"k": k})
