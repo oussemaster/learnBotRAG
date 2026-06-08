@@ -60,7 +60,7 @@ def load_documents(paths: list[Path]) -> list[Document]:
     Unknown extensions will be skipped; corrupted files will be logged
     without interrupting the entire ingestion pipeline.
     """
-    raw_documents: list[Document] = []
+    documents: list[Document] = []
     for path in paths:
         suffix = path.suffix.lower()
         loader_cls = LOADER_BY_SUFFIX.get(suffix)
@@ -68,19 +68,30 @@ def load_documents(paths: list[Path]) -> list[Document]:
             log.warning("    [✗] Nicht unterstützt: %s – übersprungen.", path.name)
             continue
         try:
-            raw_documents.extend(loader_cls(str(path)).load())
+            documents.extend(loader_cls(str(path)).load())
             log.info("    [✓] Geladen: %s (%s)", path.name, loader_cls.__name__)
         except FileNotFoundError:
             log.warning("    [✗] Datei nicht gefunden: %s – übersprungen.", path)
         except Exception as exc:  # noqa: BLE001
             log.error("    [✗] Fehler beim Laden von '%s': %s", path, exc)
-    if not raw_documents:
-        return raw_documents
 
-    log.info("    [✂️] Zerschneide Dokumente in kleinere Chunks ...")
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000, chunk_overlap=200, separators=["\n\n", "\n", ".", " ", ""]
-    )
+    return documents
 
-    split_docs = text_splitter.split_documents(raw_documents)
-    return split_docs
+PDF_SPLITTER = RecursiveCharacterTextSplitter(
+    chunk_size=1000, chunk_overlap=200, separators=["\n\n", "\n", ".", " ", ""]
+)
+
+def split_documents(documents: list[Document]) -> list[Document]:
+    """
+    Zerlegt Dokumente in Chunks – NUR für Formate, die das benötigen (PDF).
+
+    CSV-Dokumente sind bereits atomare Zeilen und werden nicht gesplittet.
+    Warum getrennt von load_documents: SRP + unabhängig testbar.
+    """
+
+    pdf_docs = [doc for doc in documents if doc.metadata.get("source", "").lower().endswith(".pdf")]
+    other_docs = [doc for doc in documents if doc not in pdf_docs]
+
+    splitted_docs = PDF_SPLITTER.split_documents(pdf_docs) if pdf_docs else []
+    log.info("    [✂️] %d PDF-Chunks aus %d Seiten erzeugt.", len(splitted_docs), len(pdf_docs))
+    return other_docs + splitted_docs

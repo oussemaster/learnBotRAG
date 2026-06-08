@@ -14,6 +14,7 @@ from pathlib import Path
 from langchain_chroma import Chroma
 from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_core.embeddings import Embeddings
+from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_ollama import OllamaEmbeddings
 
@@ -22,10 +23,9 @@ from src.config import (
     DATA_DIR,
     TOP_K_DOCUMENTS,
     VECTOR_DB_PATH,
-    LLM_PROVIDER,
-    LOCAL_EMBEDDING_NAME,
+    CHROMA_BATCH_SIZE,
 )
-from src.core.loaders import discover_data_paths, load_documents
+from src.core.loaders import discover_data_paths, load_documents, split_documents
 from src.core.tracker import (
     build_registry_for_paths,
     cleanup_deleted_files,
@@ -89,6 +89,30 @@ def _delete_documents_for_paths(store: Chroma, paths: list[Path]) -> None:
     for path in paths:
         resolved = str(path.resolve())
         store._collection.delete(where={"source": resolved})
+
+
+def _add_documents_in_batches(store: Chroma, documents: list[Document]) -> None:
+    """
+    Fügt Dokumente in Chroma in kleinen Stapeln (Batches) hinzu.
+
+    Warum Batch-Add statt Einzel-Add? Reduziert Speicher- und API-Last,
+    besonders bei großen Dokumenten oder vielen Chunks.
+
+    Args:
+        store:     Geöffneter Chroma-Store.
+        documents: Liste der Dokumente, die hinzugefügt werden sollen.
+    """
+    total_documents = len(documents)
+    total_batches = total_documents + CHROMA_BATCH_SIZE - 1
+    for i in range(0, total_documents, CHROMA_BATCH_SIZE):
+        batch = documents[i : i + CHROMA_BATCH_SIZE]
+        store.add_documents(batch)
+        log.info(
+            "      - Batch %d/%d  (%d Chunks) indexiert.",
+            (i // CHROMA_BATCH_SIZE) + 1,
+            total_batches,
+            len(batch),
+        )
 
 
 # ── Tracker-Fallback ───────────────────────────────────────────────────────────
@@ -157,10 +181,12 @@ def _bootstrap_store(
             "Keine Dokumente geladen – DB kann nicht erstellt werden. "
             "Bitte prüfe, ob unterstützte Dateien (.csv, .pdf) in data/ liegen."
         )
+    documents = split_documents(documents)
     log.info("      %d Dokument-Chunks insgesamt geladen.", len(documents))
 
     log.info("[2/3] Berechne Embeddings und baue Vektorindex auf …")
     VECTOR_DB_PATH.mkdir(parents=True, exist_ok=True)
+
     ## 1. Eine leere Datenbank erstellen
     store = Chroma(
         persist_directory=str(VECTOR_DB_PATH),
@@ -168,13 +194,7 @@ def _bootstrap_store(
     )
 
     # 2. Dokumente in kleinen Stapeln (Batches) hinzufügen, um Speicher- und API-Last zu reduzieren
-    batch_size = 100
-    total_batches = (len(documents) + batch_size - 1) // batch_size
-    log.info("      Sende Dokumente an das Modell in %d Batches...", total_batches)
-    for i in range(0, len(documents), batch_size):
-        batch = documents[i : i + batch_size]
-        store.add_documents(batch)
-        log.info("      - Batch %d/%d erfolgreich indexiert.", (i // batch_size) + 1, total_batches)
+    _add_documents_in_batches(store, documents)
 
     save_processed_registry(build_registry_for_paths(paths))
     log.info("[3/3] Datenbank persistent gespeichert unter: %s", VECTOR_DB_PATH)
@@ -184,7 +204,7 @@ def _bootstrap_store(
 
 def _ingest_delta(
     store: Chroma,
-    embeddings: Embeddings,  # noqa: ARG001  (Signatur-Konsistenz)
+    embeddings: Embeddings,
     delta_paths: list[Path],
     registry: dict[str, str],
 ) -> Chroma:
@@ -219,15 +239,11 @@ def _ingest_delta(
         log.warning("[⚠] Keine Dokumente aus Delta geladen – Tracker unverändert.")
         return store
 
+    documents = split_documents(documents)
     log.info("      %d Dokument-Chunks zum Indexieren.", len(documents))
     log.info("[2/2] Berechne Embeddings und füge zum Store hinzu …")
-    
-    batch_size = 100
-    total_batches = (len(documents) + batch_size - 1) // batch_size
-    for i in range(0, len(documents), batch_size):
-        batch = documents[i : i + batch_size]
-        store.add_documents(batch)
-        log.info("      - Delta-Batch %d/%d hinzugefügt.", (i // batch_size) + 1, total_batches)
+
+    _add_documents_in_batches(store, documents)
 
     save_processed_registry(merge_into_registry(registry, delta_paths))
     log.info("[✓] Delta ingestiert. %d Vektoren gesamt.\n", _vector_count(store))
@@ -305,14 +321,8 @@ def get_or_create_retriever(k: int = TOP_K_DOCUMENTS) -> VectorStoreRetriever:
         Konfigurierter :class:`~langchain_core.vectorstores.VectorStoreRetriever`.
     """
 
-    if LLM_PROVIDER == "ollama":
-        log.info(
-            "[⚙️] Initialisiere lokale Embeddings via Ollama: %s", LOCAL_EMBEDDING_NAME
-        )
-        embeddings: Embeddings = OllamaEmbeddings(model=LOCAL_EMBEDDING_NAME)
-    else:
-        log.info("[⚙️] Initialisiere OpenAI Embeddings via OpenAI.")
-        embeddings: Embeddings = OpenAIEmbeddings()
+    from src.core.providers import get_embeddings
 
+    embeddings: Embeddings = get_embeddings()
     store = initialize_vector_store(embeddings)
     return store.as_retriever(search_kwargs={"k": k})

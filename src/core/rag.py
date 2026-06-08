@@ -12,23 +12,12 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from langchain_core.vectorstores import VectorStoreRetriever
-from langchain_openai import ChatOpenAI
-from langchain_ollama import ChatOllama
-from src.config import OPENAI_MODEL_NAME, LOCAL_MODEL_NAME, LLM_PROVIDER
+from src.core.providers import get_llm
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
 
-def _get_llm() -> Runnable:
-    """Factory für das LLM, basierend auf der Konfiguration."""
-    if LLM_PROVIDER == "openai":
-        log.info("[⚙️] Nutze Cloud-Modell via OpenAI: %s", OPENAI_MODEL_NAME)
-        return ChatOpenAI(model=OPENAI_MODEL_NAME, temperature=0.0)
-    elif LLM_PROVIDER == "ollama":
-        log.info("[⚙️] Nutze lokales Modell via Ollama: %s", LOCAL_MODEL_NAME)
-        return ChatOllama(model=LOCAL_MODEL_NAME, temperature=0.0)
-    else:
-        raise ValueError(f"Unbekannter LLM_PROVIDER: {LLM_PROVIDER}")
+
 
 def format_docs(docs: list[Document]) -> str:
     """
@@ -69,7 +58,7 @@ def build_answer_chain() -> Runnable:
     prompt = ChatPromptTemplate.from_messages(
         [("system", system_prompt), ("human", "{question}")]
     )
-    llm = _get_llm()
+    llm = get_llm()
     return prompt | llm | StrOutputParser()
 
 
